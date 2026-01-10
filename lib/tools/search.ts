@@ -3,9 +3,11 @@
  */
 export interface SearchResult {
   title: string;
-  snippet: string;
+  snippet: string; // Short snippet/summary
+  content?: string; // Full content from Tavily (crucial for analysis)
   link: string;
   source?: string;
+  answer?: string; // Tavily's AI-generated answer (if available)
 }
 
 /**
@@ -19,7 +21,7 @@ export interface SearchResponse {
 /**
  * Search provider type
  */
-type SearchProvider = "serper" | "tavily";
+type SearchProvider = "serper" | "tavily" | "vertex";
 
 /**
  * Get search provider from environment or default based on available API keys
@@ -29,12 +31,19 @@ function getSearchProvider(): SearchProvider {
   const provider = rawProvider?.toLowerCase()?.trim();
   const tavilyKey = process.env.TAVILY_API_KEY;
   const serperKey = process.env.SERPER_API_KEY;
+  const gcpProjectId = process.env.GCP_PROJECT_ID;
   
   console.log(`[Search] Provider config: SEARCH_PROVIDER="${rawProvider}", normalized="${provider}"`);
+  console.log(`[Search] GCP Project ID exists: ${!!gcpProjectId}`);
   console.log(`[Search] Tavily key exists: ${!!tavilyKey}, valid: ${tavilyKey && tavilyKey !== "your_tavily_api_key_here"}`);
   console.log(`[Search] Serper key exists: ${!!serperKey}, valid: ${serperKey && serperKey !== "your_serper_api_key_here"}`);
   
   // If provider is explicitly set and valid, use it (case-insensitive)
+  if (provider === "vertex" || provider === "google" || provider === "grounding") {
+    console.log(`[Search] Using Vertex (Google Grounding) (explicitly set)`);
+    return "vertex";
+  }
+  
   if (provider === "tavily" || provider === "Tavily" || provider === "TAVILY") {
     console.log(`[Search] Using Tavily (explicitly set)`);
     return "tavily";
@@ -46,7 +55,12 @@ function getSearchProvider(): SearchProvider {
   }
   
   // Auto-detect based on available API keys
-  // Prefer Tavily if both are available
+  // Prefer Vertex (Google Grounding) if GCP project is configured
+  if (gcpProjectId && gcpProjectId !== "your_gcp_project_id") {
+    console.log(`[Search] Using Vertex (auto-detected from GCP_PROJECT_ID)`);
+    return "vertex";
+  }
+  
   if (tavilyKey && tavilyKey !== "your_tavily_api_key_here") {
     console.log(`[Search] Using Tavily (auto-detected from valid API key)`);
     return "tavily";
@@ -120,9 +134,16 @@ async function searchWithSerper(query: string): Promise<SearchResponse> {
 }
 
 /**
- * Search the web using Tavily API
+ * Search the web using Tavily API with advanced parameters
+ * 
+ * @param query - Search query string
+ * @param maxResults - Maximum number of results to return (default: 5)
+ * @returns Promise resolving to search results with full content
  */
-async function searchWithTavily(query: string): Promise<SearchResponse> {
+export async function searchTavily(
+  query: string,
+  maxResults: number = 5
+): Promise<SearchResponse> {
   const apiKey = process.env.TAVILY_API_KEY;
   console.log(`[Tavily] API key check: exists=${!!apiKey}, value=${apiKey ? apiKey.substring(0, 10) + "..." : "none"}`);
   
@@ -133,6 +154,8 @@ async function searchWithTavily(query: string): Promise<SearchResponse> {
   }
 
   try {
+    console.log(`[Tavily] Searching: "${query}" (maxResults: ${maxResults})`);
+    
     const response = await fetch("https://api.tavily.com/search", {
       method: "POST",
       headers: {
@@ -141,8 +164,10 @@ async function searchWithTavily(query: string): Promise<SearchResponse> {
       body: JSON.stringify({
         api_key: apiKey,
         query: query,
-        search_depth: "basic",
-        max_results: 10,
+        search_depth: "advanced", // Use advanced depth for better context
+        include_answer: true, // Include AI-generated answer
+        include_raw_content: false, // Don't include raw HTML, just processed content
+        max_results: maxResults,
       }),
     });
 
@@ -162,17 +187,38 @@ async function searchWithTavily(query: string): Promise<SearchResponse> {
     }
 
     const data = await response.json();
+    
+    console.log(`[Tavily] Received ${data.results?.length || 0} results`);
+    if (data.answer) {
+      console.log(`[Tavily] AI Answer available: ${data.answer.substring(0, 100)}...`);
+    }
 
+    // Map Tavily results to our SearchResult format
     const results: SearchResult[] = (data.results || []).map((item: any) => ({
       title: item.title || "",
-      snippet: item.content || "",
+      snippet: item.content ? item.content.substring(0, 200) + "..." : "", // Short snippet
+      content: item.content || "", // Full content for analysis
       link: item.url || "",
       source: item.url ? new URL(item.url).hostname : undefined,
     }));
 
-    return {
+    // Include AI answer if available
+    const responseWithAnswer: SearchResponse = {
       results,
     };
+
+    // Add answer as a special result if available
+    if (data.answer) {
+      responseWithAnswer.results.unshift({
+        title: "AI Summary",
+        snippet: data.answer.substring(0, 200) + "...",
+        content: data.answer,
+        link: "",
+        answer: data.answer,
+      });
+    }
+
+    return responseWithAnswer;
   } catch (error) {
     console.error("Error searching with Tavily:", error);
     throw new Error(
@@ -181,6 +227,13 @@ async function searchWithTavily(query: string): Promise<SearchResponse> {
       }`
     );
   }
+}
+
+/**
+ * Search the web using Tavily API (legacy wrapper for backward compatibility)
+ */
+async function searchWithTavily(query: string): Promise<SearchResponse> {
+  return searchTavily(query, 10);
 }
 
 /**
@@ -195,14 +248,28 @@ async function searchWithTavily(query: string): Promise<SearchResponse> {
  * @param query - Search query (e.g., "AAPL earnings call transcript Q4 2024")
  * @returns Promise resolving to search results
  */
-export async function searchWeb(query: string): Promise<SearchResponse> {
+/**
+ * Search the web for information
+ * 
+ * @param query - Search query string
+ * @param maxResults - Maximum number of results (default: 10, ignored for Serper)
+ * @returns Promise resolving to search results
+ */
+export async function searchWeb(
+  query: string,
+  maxResults: number = 10
+): Promise<SearchResponse> {
   const provider = getSearchProvider();
   
-  console.log(`[Search] searchWeb called with provider: ${provider}`);
+  console.log(`[Search] searchWeb called with provider: ${provider}, maxResults: ${maxResults}`);
 
-  if (provider === "tavily") {
-    console.log(`[Search] Calling searchWithTavily for query: ${query.substring(0, 50)}...`);
-    return searchWithTavily(query);
+  if (provider === "vertex") {
+    console.log(`[Search] Calling searchWithVertexGrounding for query: ${query.substring(0, 50)}...`);
+    const { searchWithVertexGrounding } = await import("@/lib/ai/vertex-grounding");
+    return searchWithVertexGrounding(query, maxResults);
+  } else if (provider === "tavily") {
+    console.log(`[Search] Calling searchTavily for query: ${query.substring(0, 50)}...`);
+    return searchTavily(query, maxResults);
   } else {
     console.log(`[Search] Calling searchWithSerper for query: ${query.substring(0, 50)}...`);
     return searchWithSerper(query);

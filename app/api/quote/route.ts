@@ -22,7 +22,13 @@ export async function GET(request: NextRequest) {
     const adapter = getAdapterForTicker(ticker);
     const quote = await adapter.getQuote(ticker);
 
-    return NextResponse.json(quote);
+    // Serialize Date object to ISO string for JSON response
+    const serializedQuote = {
+      ...quote,
+      timestamp: quote.timestamp.toISOString(),
+    };
+
+    return NextResponse.json(serializedQuote);
   } catch (error) {
     console.error("Error fetching quote:", error);
     return NextResponse.json(

@@ -202,6 +202,9 @@ export class TencentUSAdapter implements MarketDataAdapter {
       marketCap,
       volume: volume > 0 ? volume : undefined,
       timestamp: new Date(),
+      marketType: MarketType.US,
+      currency: "USD",
+      change1D: calculatedChangePercent, // Same as current changePercent for now
     };
   }
 

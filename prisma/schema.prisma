@@ -1,0 +1,93 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// Research Report Models
+// ==========================================
+
+/// A complete research report for a stock ticker
+model Report {
+  id          String   @id @default(uuid())
+  ticker      String
+  language    String   @default("en") // "en" or "cn"
+  summary     String?  // The final one-liner verdict
+  
+  // Full report JSON (for quick access)
+  narrativeArc     String?  // Market narrative
+  marginalChanges  String?  // Recent changes
+  verdict          String?  // Final verdict
+  
+  // Financial reality (JSON string)
+  financialReality String?
+  
+  // Competitor matrix (JSON string)
+  competitorMatrix String?
+  
+  // Token usage tracking
+  totalTokens      Int      @default(0)
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  chains      TopicChain[]
+
+  // Indexes for faster lookups
+  @@index([ticker])
+  @@index([createdAt])
+}
+
+/// A topic-based chain of investigation (e.g., "Competitive Landscape")
+model TopicChain {
+  id          String       @id @default(uuid())
+  topic       String       // e.g., "Competitive Landscape"
+  orderIndex  Int          @default(0) // Order within the report
+  
+  // Foreign key
+  reportId    String
+  report      Report       @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt   DateTime     @default(now())
+
+  // Relations
+  nodes       ResearchNode[]
+
+  @@index([reportId])
+}
+
+/// A single step in the investigation chain
+model ResearchNode {
+  id              String   @id @default(uuid())
+  
+  // Foreign key
+  chainId         String
+  chain           TopicChain @relation(fields: [chainId], references: [id], onDelete: Cascade)
+
+  // Node content
+  stepName        String   // e.g., "Step 1: Identify Competitors"
+  intent          String   // Why we're asking this question
+  questions       String   // JSON string of questions asked
+  findings        String   // JSON string of raw facts/Tavily results (CRITICAL: Store everything)
+  reasoning       String   // The AI's deduction
+  orderIndex      Int      // To maintain the sequence within the chain
+  
+  // Optional: Store raw search results for reference
+  rawSearchResults String? // JSON string of complete Tavily responses
+
+  // Timestamps
+  createdAt   DateTime @default(now())
+
+  @@index([chainId])
+  @@index([orderIndex])
+}
